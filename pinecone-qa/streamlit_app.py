@@ -1,17 +1,18 @@
 import os, tempfile
-import streamlit as st, pinecone
-from langchain.llms.openai import OpenAI
+import streamlit as st
+import pinecone
 from langchain.vectorstores.pinecone import Pinecone
-from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain.embeddings.sentence_transformer import SentenceTransformerEmbeddings
 from langchain.chains import RetrievalQA
 from langchain.document_loaders import PyPDFLoader
+import google.generativeai as genai
 
 # Streamlit app
-st.subheader('Generative Q&A with LangChain & Pinecone')
-            
-# Get OpenAI API key, Pinecone API key and environment, and source document input
+st.subheader('Generative Q&A with LangChain & Pinecone (using Sentence Transformers)')
+
+# Get Google API key (if using Cloud TPU) and Pinecone details
 with st.sidebar:
-    openai_api_key = st.text_input("OpenAI API key", type="password")
+    google_api_key = st.text_input("Google API key (optional for Cloud TPU)", type="password")  # Add if needed
     pinecone_api_key = st.text_input("Pinecone API key", type="password")
     pinecone_env = st.text_input("Pinecone environment")
     pinecone_index = st.text_input("Pinecone index name")
@@ -20,28 +21,30 @@ query = st.text_input("Enter your query")
 
 if st.button("Submit"):
     # Validate inputs
-    if not openai_api_key or not pinecone_api_key or not pinecone_env or not pinecone_index or not source_doc or not query:
+    if not pinecone_api_key or not pinecone_env or not pinecone_index or not source_doc or not query:
         st.warning(f"Please upload the document and provide the missing fields.")
     else:
         try:
-            # Save uploaded file temporarily to disk, load and split the file into pages, delete temp file
+            # Save uploaded file temporarily, load and split, delete temp file
             with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
                 tmp_file.write(source_doc.read())
             loader = PyPDFLoader(tmp_file.name)
             pages = loader.load_and_split()
             os.remove(tmp_file.name)
-            
-            # Generate embeddings for the pages, insert into Pinecone vector database, and expose the index in a retriever interface
+
+            # Generate embeddings using Sentence Transformers, insert into Pinecone, create retriever
             pinecone.init(api_key=pinecone_api_key, environment=pinecone_env)
-            embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key)
+            embeddings = SentenceTransformerEmbeddings("all-mpnet-base-v2")  # Use a suitable model
             vectordb = Pinecone.from_documents(pages, embeddings, index_name=pinecone_index)
             retriever = vectordb.as_retriever()
 
+            genai.configure(api_key=google_api_key)
+
+            model = genai.GenerativeModel('gemini-pro')
             # Initialize the OpenAI module, load and run the Retrieval Q&A chain
-            llm = OpenAI(temperature=0, openai_api_key=openai_api_key)
-            qa = RetrievalQA.from_chain_type(llm, chain_type="stuff", retriever=retriever)
+            qa = RetrievalQA.from_chain_type(model, chain_type="stuff", retriever=retriever)
             response = qa.run(query)
-            
+
             st.success(response)
         except Exception as e:
             st.error(f"An error occurred: {e}")
